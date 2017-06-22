@@ -6,8 +6,6 @@ title: Using GeoSpark for KNN
 ![GeoSpark logo]({{ site.url }}/images/geospark/geospark_logo.png)
 
 
-Hi! 
-
 As a part of a Kaggle competition [Sberbank Russian Housing Market](https://www.kaggle.com/c/sberbank-russian-housing-market)
 I was looking for a way of how to find out missing values for ecology feature for some real estate properties. 
 Thanks to Chuppy kaggler we've got pretty accurate approximate GPS coordinates for all out training and test locations.
@@ -23,16 +21,18 @@ For sbt add this to you project's dependencies:
 
 ``` "org.datasyslab" % "geospark" % "0.7.1-snapshot", ```
 
-GeoSpark is written on Java and you will find examples only for Java. Luckily, it's not that difficult to rewrite it to Scala
-[examples](https://github.com/DataSystemsLab/GeoSpark/blob/master/core/src/main/java/org/datasyslab/geospark/showcase/Example.java) 
+GeoSpark is written on Java and you will find [examples](https://github.com/DataSystemsLab/GeoSpark/blob/master/core/src/main/java/org/datasyslab/geospark/showcase/Example.java) only for Java. 
+Luckily, it's not that difficult to rewrite them for Scala
 
-In my opinion there is a lack of good examples( tests) out there and this fact partially forces me to write this post.
 
 Let's back to the task, I needed to implement K-nearest neighbours using **geographical** distance as a distance for this algorithm.
 
 Here is a test from Example.java that do something close to what I needed:
 
 ``` 
+geometryFactory=new GeometryFactory();
+kNNQueryPoint=geometryFactory.createPoint(new Coordinate(-84.01, 34.01));
+
 public static void testSpatialKnnQuery() throws Exception {
     objectRDD = new PointRDD(sc, PointRDDInputLocation, PointRDDOffset, PointRDDSplitter, true, StorageLevel.MEMORY_ONLY());
     objectRDD.rawSpatialRDD.persist(StorageLevel.MEMORY_ONLY());
@@ -48,26 +48,29 @@ public static void testSpatialKnnQuery() throws Exception {
 Analog on Scala
     
 ``` 
-    val pointRddOffset = 1
-    val pointRDDSplitter: FileDataSplitter = FileDataSplitter.CSV
-    val inputLocationCSV = System.getProperty("user.dir")+"/src/main/scala/com/engineering/ecology/" + "id_lat_lon_nonmissing.csv"
+val pointRddOffset = 1
+val pointRDDSplitter: FileDataSplitter = FileDataSplitter.CSV
+val inputLocationCSV = System.getProperty("user.dir")+"/src/main/scala/com/engineering/ecology/" + "id_lat_lon_nonmissing.csv"
 
-    val objectRDD = new PointRDD(ss.sparkContext, inputLocationCSV, pointRddOffset, pointRDDSplitter, true, StorageLevel.MEMORY_ONLY)
-    objectRDD.rawSpatialRDD.persist(StorageLevel.MEMORY_ONLY)
-    val geometryFactory = new GeometryFactory()
+val objectRDD = new PointRDD(ss.sparkContext, inputLocationCSV, pointRddOffset, pointRDDSplitter, true, StorageLevel.MEMORY_ONLY)
+objectRDD.rawSpatialRDD.persist(StorageLevel.MEMORY_ONLY)
+
+val geometryFactory = new GeometryFactory()
+val kNNQueryPoint = geometryFactory.createPoint(new Coordinate(	lat, lon))
+val  neighbours: util.List[Point] = KNNQuery.SpatialKnnQuery(objectRDD, kNNQueryPoint, 3, false)
 ```   
    
 Now, one row at a time. 
    
 ```
-   val pointRddOffset = 1
+val pointRddOffset = 1
 ``` 
    
-This value should be equal to an index(shift) of the coordinates in the input csv file. 
+This value should be equal to an index of the coordinates' columns in the input csv file. 
 
-In my case I set it to `1` because of the `id` attribute that comes before latitude and longitude.
+In my case I set it to `1` because of the `id` column that comes before latitude and longitude.
 
-Here is first three row of my input file:
+Here is the first three row of my input file:
 
 ```
 1,55.8910074613746,37.6048439354222
@@ -76,45 +79,64 @@ Here is first three row of my input file:
 ...
 ```
 
-Notice that file shouldn't have header row and that latitude comes first.
+Notice that file shouldn't have header row and that latitude comes before longitude.
 
 ``` 
 val pointRDDSplitter: FileDataSplitter = FileDataSplitter.CSV 
 ```
 
-Here we just tell to GeoSpark that it should use splitter for .csv files.
+Here we just tell GeoSpark that it should use splitter for .csv files.
 
-Next, we should specify path to the file with our coordinates. Unfortunately I didn't find a way to pass RDD 
+Next, we should specify path to the file with our coordinates. Unfortunately I didn't find a way to pass Spark's RDD 
 to the constructor of PointRDD.
 
 ```
 val objectRDD = new PointRDD(ss.sparkContext, inputLocationCSV, pointRddOffset, pointRDDSplitter, true, StorageLevel.MEMORY_ONLY)
        
 ```
-This row will load **inputLocationCSV** file to PointRDD representation.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+This row will load **inputLocationCSV** file into the PointRDD representation.
+Please keep in mind that PointRDD is actually RDD of point**s** and not a single point.
+Fifth parameter **carryInputData** is boolean and is really important for my case. 
+It's a way to find out ids for the points when we receive our neighbours. We will come back to this below. 
 
 ```
-val pointRddOffset = 1
-val pointRDDSplitter: FileDataSplitter = FileDataSplitter.CSV
-val inputLocationCSV = System.getProperty("user.dir")+"/src/main/scala/com/geo/material/lat_lon_with_material.csv"
-
-val objectRDD = new PointRDD(ss.sparkContext, inputLocationCSV, pointRddOffset, pointRDDSplitter, true, StorageLevel.MEMORY_ONLY)
 objectRDD.rawSpatialRDD.persist(StorageLevel.MEMORY_ONLY)
-val geometryFactory = new GeometryFactory()
 ```
 
-Really appreciate what XXX is doing for this project. He answers to my question really quickly. 
+Storing reusable data in memory is typical Spark's optimization.
+
+```
+val geometryFactory = new GeometryFactory()
+val kNNQueryPoint = geometryFactory.createPoint(new Coordinate(	lat, lon))
+```
+
+Here we are constructing our central point for which we need to find closest neighbours.
+
+```
+val  neighbours: util.List[Point] = KNNQuery.SpatialKnnQuery(objectRDD, kNNQueryPoint, 3, false)
+```
+
+And finally, we are calling method _SpatialKnnQuery_ to get list of closest points. 
+Here k is equal to 3. Last parameter is _useIndex_. 
+PS. I couldn't provide here any information about performance gain of using index. You should test it yourself.
+
+Now I will leave the scope of a example from GeoSpark and continue with my own task.
+
+For further interpolation we now somehow need to map our neighbours to an information that we know about them.
+That is my I placed ids in our **inputLocationCSV** file and pass **true** as a parameter **carryInputData** of the PointRDD's constructor.
+
+To extract information we need some effort because GeoSpark is carrying data as plain String only.
+```
+neighbours.asScala.map { point =>
+    val userData = point.getUserData.toString
+    val objID = userData.split(",")(0)
+    objID.toInt
+}
+```
+
+That's it! We can now join any available information by id.
+
+In my case it was ecology attribute and by simple voting between neighbours I was able to approximate missing data with high accuracy (based on train/test splits validation).
+
+
+Really appreciate what [Jia Yu](https://github.com/jiayuasu) is doing for this project. And thanks to him for fast and good support. 
