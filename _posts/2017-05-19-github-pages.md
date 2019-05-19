@@ -1,4 +1,3 @@
-
 ---
 layout: post
 title: Target Encoding in Depth
